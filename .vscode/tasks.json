@@ -7,7 +7,9 @@
       "command": "uv",
       "args": [
         "run",
-        "pyinstaller",
+        "python",
+        "-m",
+        "PyInstaller",
         "main.py",
         "--onefile",
         "--noconsole",
