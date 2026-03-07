@@ -13,6 +13,7 @@ import ctypes
 import ctypes.wintypes
 import logging
 import os
+import signal
 import sys
 import threading
 import time
@@ -20,19 +21,23 @@ from pathlib import Path
 from pynput import mouse
 
 # ── ログ設定 ──────────────────────────────────────────────
-if getattr(sys, "frozen", False):
-    _log_dir = Path(os.environ.get("APPDATA", Path.home())) / "vrchat-mouserun"
-else:
-    _log_dir = Path(__file__).parent
+def _setup_logging() -> None:
+    if getattr(sys, "frozen", False):
+        # PyInstaller exe 実行時: %APPDATA% 配下のファイルへ出力
+        log_dir = Path(os.environ.get("APPDATA", Path.home())) / "vrchat-mouserun"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(str(log_dir / "vrchat-mouserun.log"), encoding="utf-8")
+    else:
+        # Python 直接実行時: コンソールへ出力
+        handler = logging.StreamHandler(sys.stdout)
 
-_log_dir.mkdir(parents=True, exist_ok=True)
-log_path = _log_dir / "vrchat-mouserun.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[handler],
+    )
 
-logging.basicConfig(
-    filename=str(log_path),
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+_setup_logging()
 logger = logging.getLogger(__name__)
 
 # ── Win32 定数 ────────────────────────────────────────────
@@ -68,7 +73,7 @@ _lock = threading.Lock()
 _left_down = False
 _right_down = False
 _forwarding = False  # 現在 W+Shift を送信中かどうか
-_running = True      # バックグラウンドスレッド制御用
+_stop_event = threading.Event()  # 終了シグナル
 
 
 def is_vrchat_active() -> bool:
@@ -129,7 +134,7 @@ def update_forward() -> None:
 
 def _focus_watcher() -> None:
     """100ms ごとにフォーカス状態を確認し、VRChat が非アクティブになったら W+Shift を解除する。"""
-    while _running:
+    while not _stop_event.is_set():
         update_forward()
         time.sleep(0.1)
 
@@ -148,27 +153,33 @@ def on_click(x, y, button, pressed) -> None:
 
 def _emergency_cleanup() -> None:
     """atexit ハンドラ: 終了時にキーが押しっぱなしにならないよう解放する。"""
-    global _running
-    _running = False
+    _stop_event.set()
     with _lock:
         forwarding = _forwarding
     if forwarding:
         _stop_forward()
 
 
+def _signal_handler(signum, frame) -> None:
+    """Ctrl+C (SIGINT) を受け取って終了イベントをセットする。"""
+    logger.info("SIGINT received, stopping...")
+    _stop_event.set()
+
+
 def main() -> None:
     atexit.register(_emergency_cleanup)
-    logger.info("vrchat-mouserun started")
+    signal.signal(signal.SIGINT, _signal_handler)
+
+    logger.info("vrchat-mouserun started (Ctrl+C to stop)")
 
     # バックグラウンドスレッドでフォーカス変化を定期監視
     watcher = threading.Thread(target=_focus_watcher, daemon=True)
     watcher.start()
 
     with mouse.Listener(on_click=on_click) as listener:
-        try:
-            listener.join()
-        except KeyboardInterrupt:
-            pass
+        # _stop_event がセットされるまで待機（Ctrl+C や atexit で解除）
+        _stop_event.wait()
+        listener.stop()
 
     logger.info("vrchat-mouserun stopped")
 
