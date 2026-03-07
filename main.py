@@ -43,8 +43,14 @@ logger = logging.getLogger(__name__)
 # ── Win32 定数 ────────────────────────────────────────────
 VK_W = 0x57
 VK_LSHIFT = 0xA0
-KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_KEYUP     = 0x0002
+KEYEVENTF_SCANCODE  = 0x0008  # wScan を使うことを Windows に明示
 INPUT_KEYBOARD = 1
+
+# ハードウェアスキャンコード（MapVirtualKeyW(vk, 0) の値）
+# Unity Input System は WM_INPUT (RawInput) 経由でスキャンコードを識別するため必須
+SC_W      = 0x11
+SC_LSHIFT = 0x2A
 
 # ── ctypes 構造体 ─────────────────────────────────────────
 class KEYBDINPUT(ctypes.Structure):
@@ -83,7 +89,8 @@ _lock = threading.Lock()
 _left_down = False
 _right_down = False
 _forwarding = False  # 現在 W+Shift を送信中かどうか
-_stop_event = threading.Event()  # 終了シグナル
+_stop_event  = threading.Event()  # 終了シグナル
+_click_event = threading.Event()  # on_click → _focus_watcher への通知
 
 
 def is_vrchat_active() -> bool:
@@ -94,13 +101,21 @@ def is_vrchat_active() -> bool:
     return buf.value.strip() == "VRChat"
 
 
-def send_key(vk: int, down: bool) -> None:
-    """SendInput で指定仮想キーを押す / 離す。"""
-    flags = 0 if down else KEYEVENTF_KEYUP
+def send_key(vk: int, scan: int, down: bool) -> None:
+    """SendInput で指定仮想キーを押す / 離す。
+
+    wVk と wScan を両方設定し KEYEVENTF_SCANCODE を立てることで、
+    Unity Input System (RawInput 経由) にも正常に届くようにする。
+    wScan=0 のまま仮想キーのみ送ると WM_INPUT の scan field が 0x00 になり
+    VRChat に無視される。
+    """
+    flags = KEYEVENTF_SCANCODE
+    if not down:
+        flags |= KEYEVENTF_KEYUP
     inp = INPUT(
         type=INPUT_KEYBOARD,
         _input=_INPUT_UNION(
-            ki=KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=0)
+            ki=KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=flags, time=0, dwExtraInfo=0)
         ),
     )
     sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
@@ -114,15 +129,15 @@ def _start_forward() -> None:
         logger.warning("focus changed before SendInput, aborting start")
         return
     logger.info("forward start")
-    send_key(VK_LSHIFT, True)
-    send_key(VK_W, True)
+    send_key(VK_LSHIFT, SC_LSHIFT, True)
+    send_key(VK_W,      SC_W,      True)
 
 
 def _stop_forward() -> None:
     """W+LShift のキーアップを送信する。"""
     logger.info("forward stop")
-    send_key(VK_W, False)
-    send_key(VK_LSHIFT, False)
+    send_key(VK_W,      SC_W,      False)
+    send_key(VK_LSHIFT, SC_LSHIFT, False)
 
 
 def update_forward() -> None:
@@ -145,10 +160,17 @@ def update_forward() -> None:
 
 
 def _focus_watcher() -> None:
-    """100ms ごとにフォーカス状態を確認し、VRChat が非アクティブになったら W+Shift を解除する。"""
+    """クリックイベント通知または 100ms タイムアウトで update_forward() を呼ぶ。
+
+    SendInput は必ずこのスレッドから呼ぶ。
+    pynput の WH_MOUSE_LL フックコールバック (on_click) 内から SendInput を
+    呼ぶと、Windows がフックスレッドをブロックする可能性があるため、
+    on_click は状態更新 + _click_event.set() のみ行う。
+    """
     while not _stop_event.is_set():
+        _click_event.wait(timeout=0.1)
+        _click_event.clear()
         update_forward()
-        time.sleep(0.1)
 
 
 def on_click(x, y, button, pressed) -> None:
@@ -159,8 +181,9 @@ def on_click(x, y, button, pressed) -> None:
             _left_down = pressed
         elif button == mouse.Button.right:
             _right_down = pressed
-    # Win32 呼び出しはロック外で実行
-    update_forward()
+    # SendInput は WH_MOUSE_LL フックスレッド内では呼ばない。
+    # _focus_watcher スレッドに通知して処理を委ねる。
+    _click_event.set()
 
 
 def _emergency_cleanup() -> None:
