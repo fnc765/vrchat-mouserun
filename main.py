@@ -53,20 +53,30 @@ class KEYBDINPUT(ctypes.Structure):
         ("wScan",       ctypes.wintypes.WORD),
         ("dwFlags",     ctypes.wintypes.DWORD),
         ("time",        ctypes.wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ("dwExtraInfo", ctypes.c_size_t),   # ULONG_PTR: x86=4B, x64=8B
     ]
 
-# Union には ki のみ（mi/ui は使用しない）
+# Union は MOUSEINPUT(32B) / KEYBDINPUT(24B) / HARDWAREINPUT(8B) を包む。
+# KEYBDINPUT(24B) 単独だと Union=24B になるため _pad で 32B に揃える。
 class _INPUT_UNION(ctypes.Union):
-    _fields_ = [("ki", KEYBDINPUT)]
+    _fields_ = [
+        ("ki",   KEYBDINPUT),
+        ("_pad", ctypes.c_byte * 32),
+    ]
 
 class INPUT(ctypes.Structure):
     _fields_ = [
-        ("type", ctypes.wintypes.DWORD),
+        ("type",   ctypes.wintypes.DWORD),
         ("_input", _INPUT_UNION),
     ]
 
 user32 = ctypes.windll.user32
+user32.SendInput.argtypes = [
+    ctypes.wintypes.UINT,
+    ctypes.POINTER(INPUT),
+    ctypes.c_int,
+]
+user32.SendInput.restype = ctypes.wintypes.UINT
 
 # ── 状態管理 ──────────────────────────────────────────────
 _lock = threading.Lock()
@@ -90,10 +100,12 @@ def send_key(vk: int, down: bool) -> None:
     inp = INPUT(
         type=INPUT_KEYBOARD,
         _input=_INPUT_UNION(
-            ki=KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=None)
+            ki=KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=0)
         ),
     )
-    user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    if sent != 1:
+        logger.warning("SendInput failed: sent=%d LastError=%d", sent, ctypes.GetLastError())
 
 
 def _start_forward() -> None:
@@ -170,14 +182,18 @@ def main() -> None:
     atexit.register(_emergency_cleanup)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    logger.info("vrchat-mouserun started (Ctrl+C to stop)")
+    logger.info(
+        "vrchat-mouserun started (Ctrl+C to stop) "
+        "INPUT size=%d KEYBDINPUT size=%d",
+        ctypes.sizeof(INPUT),
+        ctypes.sizeof(KEYBDINPUT),
+    )
 
     # バックグラウンドスレッドでフォーカス変化を定期監視
     watcher = threading.Thread(target=_focus_watcher, daemon=True)
     watcher.start()
 
     with mouse.Listener(on_click=on_click) as listener:
-        # _stop_event がセットされるまで待機（Ctrl+C や atexit で解除）
         _stop_event.wait()
         listener.stop()
 
