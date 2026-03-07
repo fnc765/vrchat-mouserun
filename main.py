@@ -87,6 +87,7 @@ _lock       = threading.Lock()
 _left_down  = False
 _right_down = False
 _forwarding = False
+_dash_enabled = True       # 起動時はレジストリから読み込む
 _stop_event = threading.Event()
 _call_queue: queue.SimpleQueue = queue.SimpleQueue()
 
@@ -115,15 +116,17 @@ def _start_forward() -> None:
     if not is_vrchat_active():
         logger.warning("focus changed before SendInput, aborting start")
         return
-    logger.info("forward start")
-    send_key(VK_LSHIFT, SC_LSHIFT, True)
-    send_key(VK_W,      SC_W,      True)
+    logger.info("forward start (dash=%s)", _dash_enabled)
+    if _dash_enabled:
+        send_key(VK_LSHIFT, SC_LSHIFT, True)
+    send_key(VK_W, SC_W, True)
 
 
 def _stop_forward() -> None:
     logger.info("forward stop")
-    send_key(VK_W,      SC_W,      False)
-    send_key(VK_LSHIFT, SC_LSHIFT, False)
+    send_key(VK_W, SC_W, False)
+    if _dash_enabled:
+        send_key(VK_LSHIFT, SC_LSHIFT, False)
 
 
 def update_forward() -> None:
@@ -174,6 +177,30 @@ def _emergency_cleanup() -> None:
 # ── 自動起動（レジストリ） ────────────────────────────────
 _STARTUP_REG_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 _APP_NAME        = "vrchat-mouserun"
+
+# ── ダッシュ設定（レジストリ） ───────────────────────────────
+_DASH_REG_KEY = r"SOFTWARE\vrchat-mouserun"
+_DASH_VALUE   = "dash_enabled"
+
+
+def load_dash_setting() -> bool:
+    """レジストリからダッシュ設定を読み込む（デフォルト: True）。"""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _DASH_REG_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, _DASH_VALUE)
+            return bool(value)
+    except (FileNotFoundError, OSError):
+        return True
+
+
+def save_dash_setting(enabled: bool) -> None:
+    """ダッシュ設定をレジストリに保存する。"""
+    try:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _DASH_REG_KEY) as key:
+            winreg.SetValueEx(key, _DASH_VALUE, 0, winreg.REG_DWORD, int(enabled))
+        logger.info("Dash setting saved: %s", enabled)
+    except OSError as e:
+        logger.error("Failed to save dash setting: %s", e)
 
 
 def _exe_path() -> str:
@@ -226,6 +253,16 @@ def _on_toggle_startup(icon: pystray.Icon, item) -> None:
     icon.update_menu()
 
 
+def _on_toggle_dash(icon: pystray.Icon, item) -> None:
+    global _dash_enabled
+    _dash_enabled = not _dash_enabled
+    save_dash_setting(_dash_enabled)
+    icon.update_menu()
+    # ダッシュをOFFにした場合、現在前進中ならLShiftを解放
+    if not _dash_enabled and _forwarding:
+        send_key(VK_LSHIFT, SC_LSHIFT, False)
+
+
 def _on_tray_exit(icon: pystray.Icon, item) -> None:
     logger.info("Tray exit requested")
     _stop_event.set()
@@ -233,6 +270,9 @@ def _on_tray_exit(icon: pystray.Icon, item) -> None:
 
 
 def main() -> None:
+    global _dash_enabled
+    _dash_enabled = load_dash_setting()
+
     atexit.register(_emergency_cleanup)
     signal.signal(signal.SIGINT, lambda s, f: (_stop_event.set(),))
 
@@ -253,6 +293,11 @@ def main() -> None:
                 "Windows起動時に自動起動",
                 _on_toggle_startup,
                 checked=lambda item: is_startup_enabled(),
+            ),
+            pystray.MenuItem(
+                "ダッシュ（LShift）",
+                _on_toggle_dash,
+                checked=lambda item: _dash_enabled,
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Exit", _on_tray_exit),
