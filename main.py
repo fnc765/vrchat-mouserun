@@ -1,7 +1,7 @@
 """
 vrchat-mouserun
 マウスの左クリック＋右クリック同時押し中、VRChatがアクティブなら W+LShift を送信する。
-タスクトレイに常駐。右クリック → Exit で終了。
+タスクトレイに常駐。右クリックメニューで自動起動の管理と終了が可能。
 
 【ビルド方法】
   pip install -r requirements.txt
@@ -18,6 +18,7 @@ import queue
 import signal
 import sys
 import threading
+import winreg
 from pathlib import Path
 
 import pystray
@@ -170,20 +171,59 @@ def _emergency_cleanup() -> None:
         _stop_forward()
 
 
+# ── 自動起動（レジストリ） ────────────────────────────────
+_STARTUP_REG_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+_APP_NAME        = "vrchat-mouserun"
+
+
+def _exe_path() -> str:
+    """実行中のexeまたはスクリプトの絶対パスを返す。"""
+    if getattr(sys, "frozen", False):
+        return sys.executable
+    return str(Path(__file__).resolve())
+
+
+def is_startup_enabled() -> bool:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _STARTUP_REG_KEY) as key:
+            winreg.QueryValueEx(key, _APP_NAME)
+            return True
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def set_startup(enabled: bool) -> None:
+    try:
+        if enabled:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, _STARTUP_REG_KEY, 0, winreg.KEY_SET_VALUE
+            ) as key:
+                winreg.SetValueEx(key, _APP_NAME, 0, winreg.REG_SZ, _exe_path())
+            logger.info("Startup enabled: %s", _exe_path())
+        else:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, _STARTUP_REG_KEY, 0, winreg.KEY_SET_VALUE
+            ) as key:
+                winreg.DeleteValue(key, _APP_NAME)
+            logger.info("Startup disabled")
+    except OSError as e:
+        logger.error("Failed to update startup registry: %s", e)
+
+
 # ── タスクトレイアイコン ───────────────────────────────────
 def _create_tray_icon() -> Image.Image:
-    """64x64 のシンプルなトレイアイコンを生成する。"""
     size = 64
     img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    # 背景: 青い円
     draw.ellipse([2, 2, size - 2, size - 2], fill=(0, 120, 215, 255))
-    # 前進を表す白い三角形 (▶)
-    draw.polygon(
-        [(22, 16), (22, 48), (48, 32)],
-        fill=(255, 255, 255, 255),
-    )
+    draw.polygon([(22, 16), (22, 48), (48, 32)], fill=(255, 255, 255, 255))
     return img
+
+
+def _on_toggle_startup(icon: pystray.Icon, item) -> None:
+    new_state = not is_startup_enabled()
+    set_startup(new_state)
+    icon.update_menu()
 
 
 def _on_tray_exit(icon: pystray.Icon, item) -> None:
@@ -198,20 +238,23 @@ def main() -> None:
 
     logger.info("vrchat-mouserun started INPUT size=%d", ctypes.sizeof(INPUT))
 
-    # ワーカースレッド（SendInput 処理）
     worker = threading.Thread(target=_worker, daemon=True)
     worker.start()
 
-    # マウスリスナースレッド
     listener = mouse.Listener(on_click=on_click)
     listener.start()
 
-    # タスクトレイアイコン（メインスレッドで実行）
     tray = pystray.Icon(
         "vrchat-mouserun",
         _create_tray_icon(),
-        "VRChat MouseRun\n右クリック → Exit で終了",
+        "VRChat MouseRun",
         menu=pystray.Menu(
+            pystray.MenuItem(
+                "Windows起動時に自動起動",
+                _on_toggle_startup,
+                checked=lambda item: is_startup_enabled(),
+            ),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Exit", _on_tray_exit),
         ),
     )
