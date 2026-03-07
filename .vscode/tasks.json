@@ -1,0 +1,30 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build exe (PyInstaller)",
+      "type": "shell",
+      "command": "pyinstaller",
+      "args": [
+        "main.py",
+        "--onefile",
+        "--noconsole",
+        "--name",
+        "vrchat-mouserun",
+        "--hidden-import",
+        "pynput.mouse._win32",
+        "--hidden-import",
+        "pynput.keyboard._win32"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
