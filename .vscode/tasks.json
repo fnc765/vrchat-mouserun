@@ -4,8 +4,10 @@
     {
       "label": "Build exe (PyInstaller)",
       "type": "shell",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\pyinstaller.exe",
+      "command": "uv",
       "args": [
+        "run",
+        "pyinstaller",
         "main.py",
         "--onefile",
         "--noconsole",
@@ -23,6 +25,21 @@
         "kind": "build",
         "isDefault": true
       },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run (uv)",
+      "type": "shell",
+      "command": "uv",
+      "args": ["run", "python", "main.py"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
       "presentation": {
         "reveal": "always",
         "panel": "new"

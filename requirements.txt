@@ -1,4 +1,0 @@
-pynput
-pystray
-Pillow
-pyinstaller
