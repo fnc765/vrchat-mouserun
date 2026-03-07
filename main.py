@@ -1,10 +1,11 @@
 """
 vrchat-mouserun
 マウスの左クリック＋右クリック同時押し中、VRChatがアクティブなら W+LShift を送信する。
+タスクトレイに常駐。右クリック → Exit で終了。
 
 【ビルド方法】
   pip install -r requirements.txt
-  pyinstaller main.py --onefile --noconsole ^
+  pyinstaller main.py --onefile --noconsole --name vrchat-mouserun ^
     --hidden-import pynput.mouse._win32 ^
     --hidden-import pynput.keyboard._win32
 """
@@ -17,8 +18,10 @@ import queue
 import signal
 import sys
 import threading
-import time
 from pathlib import Path
+
+import pystray
+from PIL import Image, ImageDraw
 from pynput import mouse
 
 # ── ログ設定 ──────────────────────────────────────────────
@@ -42,8 +45,8 @@ logger = logging.getLogger(__name__)
 # ── Win32 定数 ────────────────────────────────────────────
 VK_W       = 0x57
 VK_LSHIFT  = 0xA0
-SC_W       = 0x11   # W キーのスキャンコード
-SC_LSHIFT  = 0x2A   # LShift キーのスキャンコード
+SC_W       = 0x11
+SC_LSHIFT  = 0x2A
 KEYEVENTF_KEYUP    = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
 INPUT_KEYBOARD     = 1
@@ -84,7 +87,7 @@ _left_down  = False
 _right_down = False
 _forwarding = False
 _stop_event = threading.Event()
-_call_queue: queue.SimpleQueue = queue.SimpleQueue()  # フックスレッドから切り離すためのキュー
+_call_queue: queue.SimpleQueue = queue.SimpleQueue()
 
 
 def is_vrchat_active() -> bool:
@@ -95,7 +98,6 @@ def is_vrchat_active() -> bool:
 
 
 def send_key(vk: int, scan: int, down: bool) -> None:
-    """SendInput でスキャンコード＋VK を同時指定してキーを押す / 離す。"""
     flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if not down else 0)
     inp = INPUT(
         type=INPUT_KEYBOARD,
@@ -142,25 +144,22 @@ def update_forward() -> None:
 
 
 def _worker() -> None:
-    """フックスレッドから委譲された update_forward() 呼び出しを処理するワーカー。"""
     while not _stop_event.is_set():
         try:
             _call_queue.get(timeout=0.1)
             update_forward()
         except queue.Empty:
-            # タイムアウト: フォーカス変化の定期チェックも兼ねる
             update_forward()
 
 
 def on_click(x, y, button, pressed) -> None:
-    """WH_MOUSE_LL フックスレッドから呼ばれる。状態更新とキュー投入のみ。"""
     global _left_down, _right_down
     with _lock:
         if button == mouse.Button.left:
             _left_down = pressed
         elif button == mouse.Button.right:
             _right_down = pressed
-    _call_queue.put_nowait(None)  # ワーカーに通知（SendInput はワーカー側で実行）
+    _call_queue.put_nowait(None)
 
 
 def _emergency_cleanup() -> None:
@@ -171,25 +170,56 @@ def _emergency_cleanup() -> None:
         _stop_forward()
 
 
-def _signal_handler(signum, frame) -> None:
-    logger.info("SIGINT received, stopping...")
+# ── タスクトレイアイコン ───────────────────────────────────
+def _create_tray_icon() -> Image.Image:
+    """64x64 のシンプルなトレイアイコンを生成する。"""
+    size = 64
+    img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    # 背景: 青い円
+    draw.ellipse([2, 2, size - 2, size - 2], fill=(0, 120, 215, 255))
+    # 前進を表す白い三角形 (▶)
+    draw.polygon(
+        [(22, 16), (22, 48), (48, 32)],
+        fill=(255, 255, 255, 255),
+    )
+    return img
+
+
+def _on_tray_exit(icon: pystray.Icon, item) -> None:
+    logger.info("Tray exit requested")
     _stop_event.set()
+    icon.stop()
 
 
 def main() -> None:
     atexit.register(_emergency_cleanup)
-    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGINT, lambda s, f: (_stop_event.set(),))
 
-    logger.info(
-        "vrchat-mouserun started (Ctrl+C to stop) INPUT size=%d",
-        ctypes.sizeof(INPUT),
-    )
+    logger.info("vrchat-mouserun started INPUT size=%d", ctypes.sizeof(INPUT))
 
+    # ワーカースレッド（SendInput 処理）
     worker = threading.Thread(target=_worker, daemon=True)
     worker.start()
 
-    with mouse.Listener(on_click=on_click) as listener:
-        _stop_event.wait()
+    # マウスリスナースレッド
+    listener = mouse.Listener(on_click=on_click)
+    listener.start()
+
+    # タスクトレイアイコン（メインスレッドで実行）
+    tray = pystray.Icon(
+        "vrchat-mouserun",
+        _create_tray_icon(),
+        "VRChat MouseRun\n右クリック → Exit で終了",
+        menu=pystray.Menu(
+            pystray.MenuItem("Exit", _on_tray_exit),
+        ),
+    )
+
+    try:
+        tray.run()          # メインスレッドをブロック（Exit で icon.stop() → ここを抜ける）
+    finally:
+        _stop_event.set()
         listener.stop()
 
     logger.info("vrchat-mouserun stopped")
