@@ -1,0 +1,51 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # git log全取得のため
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Build exe
+        run: uv run python -m PyInstaller main.py --onefile --noconsole --name vrchat-mouserun --hidden-import pynput.mouse._win32 --hidden-import pynput.keyboard._win32
+
+      - name: Generate release notes
+        id: release_notes
+        shell: pwsh
+        run: |
+          $prevTag = git tag --sort=-version:refname | Select-Object -Skip 1 -First 1
+          if ($prevTag) {
+            $log = git log "$prevTag..HEAD" --pretty=format:"- %s" | Where-Object { $_ -ne "" }
+          } else {
+            $log = git log --pretty=format:"- %s" | Where-Object { $_ -ne "" }
+          }
+          $notes = $log -join "`n"
+          # GitHub Actions multiline output (GUID-based delimiter to avoid collision)
+          $eofMarker = "EOF_" + [System.Guid]::NewGuid().ToString("N")
+          "notes<<$eofMarker" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $notes | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "$eofMarker" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: Release ${{ github.ref_name }}
+          body: ${{ steps.release_notes.outputs.notes }}
+          files: dist/vrchat-mouserun.exe
+          fail_on_unmatched_files: true

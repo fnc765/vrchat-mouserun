@@ -6,5 +6,9 @@ dependencies = [
     "pynput",
     "pystray",
     "Pillow",
+]
+
+[tool.uv]
+dev-dependencies = [
     "pyinstaller",
 ]
