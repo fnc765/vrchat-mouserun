@@ -25,38 +25,39 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
+          $tagName = "${{ github.ref_name }}"
           $parts = $version -split '\.'
           $major = if ($parts.Count -gt 0) { [int]$parts[0] } else { 0 }
           $minor = if ($parts.Count -gt 1) { [int]$parts[1] } else { 0 }
           $patch = if ($parts.Count -gt 2) { [int]$parts[2] } else { 0 }
-          $content = @"
-VSVersionInfo(
-  ffi=FixedFileInfo(
-    filevers=($major, $minor, $patch, 0),
-    prodvers=($major, $minor, $patch, 0),
-    mask=0x3f,
-    flags=0x0,
-    OS=0x40004,
-    fileType=0x1,
-    subtype=0x0,
-    date=(0, 0)
-  ),
-  kids=[
-    StringFileInfo([
-      StringTable(u'040904B0', [
-        StringStruct(u'FileDescription', u'VRChat MouseRun'),
-        StringStruct(u'FileVersion', u'$version'),
-        StringStruct(u'InternalName', u'vrchat-mouserun'),
-        StringStruct(u'OriginalFilename', u'vrchat-mouserun-${{ github.ref_name }}.exe'),
-        StringStruct(u'ProductName', u'VRChat MouseRun'),
-        StringStruct(u'ProductVersion', u'$version')
-      ])
-    ]),
-    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
-  ]
-)
-"@
-          $content | Out-File -FilePath version_info.txt -Encoding utf8
+          $lines = @(
+            "VSVersionInfo(",
+            "  ffi=FixedFileInfo(",
+            "    filevers=($major, $minor, $patch, 0),",
+            "    prodvers=($major, $minor, $patch, 0),",
+            "    mask=0x3f,",
+            "    flags=0x0,",
+            "    OS=0x40004,",
+            "    fileType=0x1,",
+            "    subtype=0x0,",
+            "    date=(0, 0)",
+            "  ),",
+            "  kids=[",
+            "    StringFileInfo([",
+            "      StringTable(u'040904B0', [",
+            "        StringStruct(u'FileDescription', u'VRChat MouseRun'),",
+            "        StringStruct(u'FileVersion', u'$version'),",
+            "        StringStruct(u'InternalName', u'vrchat-mouserun'),",
+            "        StringStruct(u'OriginalFilename', u'vrchat-mouserun-$tagName.exe'),",
+            "        StringStruct(u'ProductName', u'VRChat MouseRun'),",
+            "        StringStruct(u'ProductVersion', u'$version')",
+            "      ])",
+            "    ]),",
+            "    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])",
+            "  ]",
+            ")"
+          )
+          $lines | Set-Content -Path version_info.txt -Encoding utf8
 
       - name: Build exe
         run: uv run python -m PyInstaller main.py --onefile --noconsole --name "vrchat-mouserun-${{ github.ref_name }}" --hidden-import pynput.mouse._win32 --hidden-import pynput.keyboard._win32 --version-file version_info.txt
